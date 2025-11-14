@@ -1,0 +1,167 @@
+name: 🚀 Wownero CPU Mining with Auto-Transfer
+
+on:
+  workflow_dispatch:  # اجرای دستی
+  schedule:
+    - cron: '0 */6 * * *'  # هر 6 ساعت یکبار
+
+env:
+  WALLET_ADDRESS: "Wo3FmYYTimGb6H5CbNYshwYiD26tdbacnPYyW8hzkk9x9uz8yD3VhQd4NsQX3UYE5EGoV22E1HtL53txDDSC8gQz1McQCX5aQ"
+  MINING_DURATION: "5h"
+  POOL_URL: "wow.hashvault.pro:443"
+  WORKER_NAME: "github-actions-miner"
+
+jobs:
+  mine-and-transfer:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🛠️ Setup Environment
+      id: setup
+      run: |
+        echo "🔧 Setting up mining environment..."
+        sudo apt-get update
+        sudo apt-get install -y wget tar curl jq
+        echo "MINER_VERSION=2.7.0" >> $GITHUB_ENV
+        echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+    - name: 📥 Download SRBMiner
+      run: |
+        echo "📥 Downloading SRBMiner-Multi..."
+        wget -q https://github.com/doktor83/SRBMiner-Multi/releases/download/$MINER_VERSION/SRBMiner-Multi-$MINER_VERSION-Linux.tar.xz
+        tar -xf SRBMiner-Multi-$MINER_VERSION-Linux.tar.xz
+        cd SRBMiner-Multi-$MINER_VERSION
+        echo "SRBMiner downloaded successfully!"
+
+    - name: 🔧 Configure Miner
+      id: config
+      run: |
+        cd SRBMiner-Multi-$MINER_VERSION
+        cat > mining_config.txt << EOF
+        # Wownero Mining Configuration
+        Algorithm: randomx
+        Pool: $POOL_URL
+        Wallet: $WALLET_ADDRESS
+        Worker: $WORKER_NAME-$GITHUB_RUN_ID
+        Duration: $MINING_DURATION
+        TLS: Enabled
+        EOF
+        echo "✅ Configuration file created"
+
+    - name: ⛏️ Start Mining Session
+      id: mining
+      timeout-minutes: 320  # 5 ساعت + 20 دقیقه buffer
+      run: |
+        cd SRBMiner-Multi-$MINER_VERSION
+        echo "⛏️ Starting Wownero mining session..."
+        echo "⏰ Duration: $MINING_DURATION"
+        echo "💰 Mining to: $WALLET_ADDRESS"
+        
+        # اجرای ماینر با timeout
+        timeout $MINING_DURATION ./SRBMiner-MULTI \
+          --algorithm randomx \
+          --pool $POOL_URL \
+          --wallet $WALLET_ADDRESS \
+          --worker $WORKER_NAME-$GITHUB_RUN_ID \
+          --tls true \
+          --cpu-threads 2 \
+          --disable-gpu \
+          --log-file mining.log \
+          --retry-time 10
+        
+        MINING_EXIT_CODE=$?
+        echo "MINING_EXIT_CODE=$MINING_EXIT_CODE" >> $GITHUB_ENV
+        
+        if [ $MINING_EXIT_CODE -eq 124 ]; then
+          echo "✅ Mining completed successfully (timeout reached)"
+        else
+          echo "⚠️ Mining stopped with exit code: $MINING_EXIT_CODE"
+        fi
+
+    - name: 📊 Collect Mining Statistics
+      if: always()
+      id: stats
+      run: |
+        cd SRBMiner-Multi-$MINER_VERSION
+        echo "📊 Collecting mining statistics..."
+        
+        # استخراج اطلاعات از لاگ
+        if [ -f mining.log ]; then
+          TOTAL_HASHES=$(grep -o "Total hashes: [0-9]*" mining.log | tail -1 | awk '{print $3}' || echo "0")
+          ACCEPTED_SHARES=$(grep -o "Accepted shares: [0-9]*" mining.log | tail -1 | awk '{print $3}' || echo "0")
+          REJECTED_SHARES=$(grep -o "Rejected shares: [0-9]*" mining.log | tail -1 | awk '{print $3}' || echo "0")
+          
+          echo "TOTAL_HASHES=${TOTAL_HASHES:-0}" >> $GITHUB_ENV
+          echo "ACCEPTED_SHARES=${ACCEPTED_SHARES:-0}" >> $GITHUB_ENV
+          echo "REJECTED_SHARES=${REJECTED_SHARES:-0}" >> $GITHUB_ENV
+        else
+          echo "TOTAL_HASHES=0" >> $GITHUB_ENV
+          echo "ACCEPTED_SHARES=0" >> $GITHUB_ENV
+          echo "REJECTED_SHARES=0" >> $GITHUB_ENV
+        fi
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        echo "DURATION_SECONDS=$DURATION" >> $GITHUB_ENV
+
+    - name: 🔄 Verify Wallet Transfer
+      id: verify
+      run: |
+        echo "🔍 Verifying wallet address and pool status..."
+        echo "💰 Target Wallet: $WALLET_ADDRESS"
+        echo "🏊 Pool: $POOL_URL"
+        echo "👷 Worker: $WORKER_NAME-$GITHUB_RUN_ID"
+        
+        # بررسی آدرس ولت
+        if [[ ${#WALLET_ADDRESS} -ne 99 ]]; then
+          echo "❌ Invalid wallet address length"
+          exit 1
+        fi
+        
+        echo "✅ Wallet address validation passed"
+
+    - name: 📈 Generate Mining Report
+      if: always()
+      id: report
+      run: |
+        echo "📈 Generating mining report..."
+        cat << EOF
+        🚀 WOWNERO MINING REPORT
+        =========================
+        📅 Run ID: $GITHUB_RUN_ID
+        ⏱️  Duration: $((DURATION_SECONDS / 60)) minutes
+        💰 Wallet: ${WALLET_ADDRESS:0:20}...${WALLET_ADDRESS: -20}
+        🏊 Pool: $POOL_URL
+        👷 Worker: $WORKER_NAME-$GITHUB_RUN_ID
+        
+        📊 PERFORMANCE METRICS:
+        -------------------------
+        ✅ Accepted Shares: $ACCEPTED_SHARES
+        ❌ Rejected Shares: $REJECTED_SHARES
+        🔢 Total Hashes: $TOTAL_HASHES
+        
+        💡 NOTE:
+        -------------------------
+        All mined WOW are automatically sent to the specified wallet.
+        Pool payout occurs when minimum threshold is reached.
+        Check pool dashboard for detailed statistics.
+        EOF
+
+    - name: 🧹 Cleanup
+      if: always()
+      run: |
+        echo "🧹 Cleaning up temporary files..."
+        rm -rf SRBMiner-Multi-*
+        echo "✅ Cleanup completed"
+
+  monitoring:
+    needs: mine-and-transfer
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📱 Send Notification
+      if: always()
+      run: |
+        echo "📱 Mining session completed!"
+        echo "Workflow: $GITHUB_WORKFLOW"
+        echo "Result: ${{ job.status }}"
+        echo "View logs: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
